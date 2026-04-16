@@ -3,3 +3,5 @@ pandas
 altair
 scikit-learn
 openpyxl
+mlxtend
+scipy
