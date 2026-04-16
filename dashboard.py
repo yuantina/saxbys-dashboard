@@ -1,17 +1,22 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+from sklearn.linear_model import LinearRegression
 
 st.set_page_config(page_title="Saxbys Purchase Dashboard", layout="wide")
 
 st.title("☕ Saxbys Purchase Dashboard")
-st.caption("Visualize food-item purchases from transaction-style 0/1 data.")
+st.caption("Visualize item purchases, category performance, customer purchases, and regression-based predicted sales.")
 
 REQUIRED_BASE_COLUMNS = ["Year", "Weekday", "Customer"]
+WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def normalize_name(x):
+    return str(x).strip().lower()
 
 
 def validate_and_prepare(df: pd.DataFrame):
-    # Keep original names for display, but strip surrounding spaces
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -19,41 +24,33 @@ def validate_and_prepare(df: pd.DataFrame):
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    # Food-item columns are everything after the first three required fields
     item_cols = [c for c in df.columns if c not in REQUIRED_BASE_COLUMNS]
     if not item_cols:
-        raise ValueError("No food-item columns found. Expected item columns after Year, Weekday, Customer.")
+        raise ValueError("No item columns found after Year, Weekday, Customer.")
 
-    # Standardize types
     df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
     df["Weekday"] = df["Weekday"].astype(str).str.strip()
     df["Customer"] = df["Customer"].astype(str).str.strip()
 
     for col in item_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    # Optional cleanup: force binary-like values into 0/1 if needed
-    for col in item_cols:
         df[col] = (df[col] > 0).astype(int)
 
     df = df.dropna(subset=["Year"]).copy()
     df["Year"] = df["Year"].astype(int)
-
-    weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    if set(df["Weekday"]).intersection(weekday_order):
-        df["Weekday"] = pd.Categorical(df["Weekday"], categories=weekday_order, ordered=True)
+    df["Weekday"] = pd.Categorical(df["Weekday"], categories=WEEKDAY_ORDER, ordered=True)
 
     return df, item_cols
 
 
 @st.cache_data
-def load_data(uploaded_file):
+def load_main_data(uploaded_file):
     if uploaded_file is None:
         sample = pd.DataFrame(
             {
                 "Year": [2024, 2024, 2024, 2025, 2025, 2025],
                 "Weekday": ["Monday", "Tuesday", "Friday", "Monday", "Wednesday", "Saturday"],
-                "Customer": ["C001", "C002", "C003", "C004", "C005", "C006"],
+                "Customer": ["Alice", "Bob", "Carol", "Alice", "David", "Eve"],
                 "Coffee": [1, 0, 1, 1, 0, 1],
                 "Tea": [0, 1, 0, 0, 1, 0],
                 "Bagel": [1, 0, 0, 1, 1, 0],
@@ -62,25 +59,114 @@ def load_data(uploaded_file):
         )
         return validate_and_prepare(sample)
 
-    # Works for CSV. If your uploaded file is Excel, switch to pd.read_excel(uploaded_file)
-    df = pd.read_csv(uploaded_file)
+    if uploaded_file.name.lower().endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+
     return validate_and_prepare(df)
 
 
-with st.sidebar:
-    st.header("Controls")
-    uploaded_file = st.file_uploader("Upload transaction data", type=["csv"])
-    st.markdown(
-        "Expected structure: first columns are `Year`, `Weekday`, `Customer`; all remaining columns are food items coded as 0/1."
-    )
+@st.cache_data
+def load_category_list(file):
+    if file is None:
+        return []
+    if file.name.lower().endswith(".csv"):
+        df = pd.read_csv(file)
+    else:
+        df = pd.read_excel(file)
+    first_col = df.columns[0]
+    return df[first_col].dropna().astype(str).str.strip().tolist()
 
+
+def build_category_map(bakery_items, drink_items, food_items):
+    category_map = {}
+    for item in bakery_items:
+        category_map[normalize_name(item)] = "Bakery"
+    for item in drink_items:
+        category_map[normalize_name(item)] = "Drink"
+    for item in food_items:
+        category_map[normalize_name(item)] = "Food"
+    return category_map
+
+
+def get_item_category(item_name, category_map):
+    return category_map.get(normalize_name(item_name), "Other")
+
+
+def make_long_data(filtered_df, item_cols, category_map):
+    long_df = filtered_df.melt(
+        id_vars=["Year", "Weekday", "Customer"],
+        value_vars=item_cols,
+        var_name="Food Item",
+        value_name="Purchase",
+    )
+    long_df = long_df[long_df["Purchase"] == 1].copy()
+    long_df["Category"] = long_df["Food Item"].apply(lambda x: get_item_category(x, category_map))
+    return long_df
+
+
+def fit_regression_predictions(cat_summary):
+    """
+    Unified model:
+    Purchases = a + b*Weekday + c*Category + d*Year
+    where Weekday and Category are one-hot encoded.
+    """
+    if cat_summary.empty:
+        return pd.DataFrame()
+
+    reg_df = cat_summary.copy()
+    reg_df["Weekday"] = reg_df["Weekday"].astype(str)
+    reg_df["Category"] = reg_df["Category"].astype(str)
+
+    X = pd.get_dummies(reg_df[["Year", "Weekday", "Category"]], columns=["Weekday", "Category"], drop_first=True)
+    y = reg_df["Purchases"]
+
+    if len(reg_df) < 2:
+        reg_df["Predicted"] = reg_df["Purchases"]
+        return reg_df[["Year", "Weekday", "Category", "Predicted"]]
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    reg_df["Predicted"] = model.predict(X).clip(min=0)
+    return reg_df[["Year", "Weekday", "Category", "Predicted"]]
+
+
+# -----------------------------
+# Sidebar inputs
+# -----------------------------
+with st.sidebar:
+    st.header("Data Upload")
+    uploaded_file = st.file_uploader("Upload main transaction data", type=["csv", "xlsx"])
+    st.markdown("Expected columns: `Year`, `Weekday`, `Customer`, then one 0/1 column per item.")
+
+    st.markdown("---")
+    st.subheader("Upload category lists")
+    bakery_file = st.file_uploader("Upload bakery items", type=["csv", "xlsx"], key="bakery")
+    drink_file = st.file_uploader("Upload drink items", type=["csv", "xlsx"], key="drink")
+    food_file = st.file_uploader("Upload food items", type=["csv", "xlsx"], key="food")
+
+# -----------------------------
+# Load data
+# -----------------------------
 try:
-    df, item_cols = load_data(uploaded_file)
+    df, item_cols = load_main_data(uploaded_file)
 except Exception as e:
-    st.error(str(e))
+    st.error(f"Error loading main data: {e}")
     st.stop()
 
+bakery_items = load_category_list(bakery_file)
+drink_items = load_category_list(drink_file)
+food_items = load_category_list(food_file)
+category_map = build_category_map(bakery_items, drink_items, food_items)
+
+# -----------------------------
+# Sidebar filters
+# -----------------------------
 with st.sidebar:
+    st.markdown("---")
+    st.header("Filters")
     year_options = sorted(df["Year"].dropna().unique().tolist())
     selected_years = st.multiselect("Select year", options=year_options, default=year_options)
 
@@ -90,140 +176,74 @@ if filtered.empty:
     st.warning("No data matches the selected year filter.")
     st.stop()
 
-# KPI cards for classroom clarity
+# -----------------------------
+# KPI cards
+# -----------------------------
 col1, col2, col3 = st.columns(3)
 col1.metric("Rows / Visits", f"{len(filtered):,}")
 col2.metric("Unique Customers", f"{filtered['Customer'].nunique():,}")
-col3.metric("Available Food Items", f"{len(item_cols):,}")
+col3.metric("Available Items", f"{len(item_cols):,}")
 
 st.divider()
 
 # -----------------------------
-# Load category mapping files BEFORE charts
-# -----------------------------
-with st.sidebar:
-    st.markdown("---")
-    st.subheader("Upload category lists")
-    bakery_file = st.file_uploader("Upload bakery items (bakery.csv)", type=["csv"], key="bakery")
-    drink_file = st.file_uploader("Upload drink items (drink.csv)", type=["csv"], key="drink")
-    food_file = st.file_uploader("Upload food items (food.csv)", type=["csv"], key="food")
-
-
-def load_category_list(file):
-    if file is None:
-        return []
-    df_cat = pd.read_csv(file)
-    first_col = df_cat.columns[0]
-    return df_cat[first_col].dropna().astype(str).str.strip().tolist()
-
-bakery_items = load_category_list(bakery_file)
-drink_items = load_category_list(drink_file)
-food_items = load_category_list(food_file)
-
-category_map = {}
-for item in bakery_items:
-    category_map[item] = "Bakery"
-for item in drink_items:
-    category_map[item] = "Drink"
-for item in food_items:
-    category_map[item] = "Food"
-
-# -----------------------------
-# Chart 1: Sales per item (with category color)
+# Chart 1: Sales per Item
 # -----------------------------
 st.subheader("Sales per Item")
-st.caption("Because each item column is coded 1 = purchased, 0 = not purchased, sales here means purchase counts.")
+st.caption("Because each item column is coded 1 = purchased and 0 = not purchased, sales here means purchase counts.")
 
-item_sales = (
-    filtered[item_cols]
-    .sum()
-    .reset_index()
-)
-item_sales.columns = ["Food Item", "Purchases"]
-
-# Ensure category_map exists
-if 'category_map' in locals():
-    item_sales["Category"] = item_sales["Food Item"].map(category_map).fillna("Other")
-else:
-    item_sales["Category"] = "Unknown"
-
+item_sales = filtered[item_cols].sum().reset_index()
+item_sales.columns = ["Item", "Purchases"]
+item_sales["Category"] = item_sales["Item"].apply(lambda x: get_item_category(x, category_map))
 item_sales = item_sales.sort_values("Purchases", ascending=False)
 
-bar = (
+chart1 = (
     alt.Chart(item_sales)
     .mark_bar()
     .encode(
-        x=alt.X("Food Item:N", sort="-y", title="Item"),
+        x=alt.X("Item:N", sort="-y", title="Item"),
         y=alt.Y("Purchases:Q", title="Number of Purchases"),
         color=alt.Color("Category:N", title="Food Category"),
-        tooltip=["Food Item", "Category", "Purchases"],
+        tooltip=["Item", "Category", "Purchases"],
     )
     .properties(height=420)
 )
 
-st.altair_chart(bar, use_container_width=True)
-
-st.subheader("Sales Table")
+st.altair_chart(chart1, use_container_width=True)
 st.dataframe(item_sales, use_container_width=True, hide_index=True)
 
 # -----------------------------
-# Chart 2: Sales per category per weekday per year
+# Chart 2: Sales per Category by Weekday and Year
 # -----------------------------
 st.divider()
 st.subheader("Sales per Category by Weekday and Year")
 
-# Convert wide -> long
-long_df = filtered.melt(
-    id_vars=["Year", "Weekday", "Customer"],
-    value_vars=item_cols,
-    var_name="Food Item",
-    value_name="Purchase"
-)
+long_df = make_long_data(filtered, item_cols, category_map)
 
-# Keep only purchased rows
-long_df = long_df[long_df["Purchase"] == 1].copy()
-
-# Map category
-long_df["Category"] = long_df["Food Item"].map(category_map)
-long_df = long_df.dropna(subset=["Category"])
-
-# Aggregate
 cat_summary = (
     long_df.groupby(["Year", "Weekday", "Category"], as_index=False)["Purchase"]
     .sum()
+    .rename(columns={"Purchase": "Purchases"})
 )
 
-# Create combined x-axis label
+cat_summary["Weekday"] = pd.Categorical(cat_summary["Weekday"], categories=WEEKDAY_ORDER, ordered=True)
+cat_summary = cat_summary.sort_values(["Year", "Weekday", "Category"])
 cat_summary["Year-Weekday"] = cat_summary["Year"].astype(str) + " - " + cat_summary["Weekday"].astype(str)
 
 chart2 = (
     alt.Chart(cat_summary)
     .mark_bar()
     .encode(
-        x=alt.X("Year-Weekday:N", title="Year & Weekday", sort=None),
-        y=alt.Y("Purchase:Q", title="Purchases"),
+        x=alt.X("Year-Weekday:N", title="Year and Weekday"),
+        y=alt.Y("Purchases:Q", title="Purchases"),
         color=alt.Color("Category:N", title="Food Category"),
-        tooltip=["Year", "Weekday", "Category", "Purchase"]
+        tooltip=["Year", "Weekday", "Category", "Purchases"],
     )
     .properties(height=420)
 )
 
 st.altair_chart(chart2, use_container_width=True)
-
-st.subheader("Category Summary Table")
 st.dataframe(cat_summary, use_container_width=True, hide_index=True)
-
-with st.expander("How this chart works"):
-    st.markdown(
-        """
-        Steps:
-        1. Convert data from wide format (many item columns) to long format.
-        2. Keep only rows where Purchase = 1.
-        3. Map each item to a category (Drink, Food, Bakery).
-        4. Group by Year, Weekday, and Category.
-        5. Plot using combined Year-Weekday on x-axis.
-        """
-    )
 
 # -----------------------------
 # Customer search table
@@ -235,7 +255,6 @@ st.caption("Search for a customer and view each visit with weekday, year, purcha
 search_name = st.text_input("Type a customer name to search", placeholder="Enter customer name")
 
 customer_view = filtered.copy()
-
 if search_name.strip():
     customer_view = customer_view[
         customer_view["Customer"].astype(str).str.contains(search_name.strip(), case=False, na=False)
@@ -251,15 +270,67 @@ else:
     customer_view["Purchased Items"] = customer_view["Purchased Items"].apply(lambda x: ", ".join(x) if x else "")
     customer_view["Total Sales"] = customer_view[item_cols].sum(axis=1)
 
-    display_cols = ["Customer", "Year", "Weekday", "Purchased Items", "Total Sales"]
-    customer_display = customer_view[display_cols].copy()
-
+    customer_display = customer_view[["Customer", "Year", "Weekday", "Purchased Items", "Total Sales"]].copy()
     st.dataframe(customer_display, use_container_width=True, hide_index=True)
 
-    customer_csv = customer_display.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download customer search results",
-        data=customer_csv,
-        file_name="customer_purchases.csv",
-        mime="text/csv",
+# -----------------------------
+# Regression model + predicted values
+# -----------------------------
+st.divider()
+st.subheader("Predicted Sales per Category by Weekday and Year")
+st.caption("Regression model: Purchases = a + b·Weekday + c·Category + d·Year")
+
+pred_df = fit_regression_predictions(cat_summary)
+merged = pd.merge(
+    cat_summary,
+    pred_df,
+    on=["Year", "Weekday", "Category"],
+    how="left"
+)
+merged["Year-Weekday"] = merged["Year"].astype(str) + " - " + merged["Weekday"].astype(str)
+
+bars = (
+    alt.Chart(merged)
+    .mark_bar(opacity=0.7)
+    .encode(
+        x=alt.X("Year-Weekday:N", title="Year and Weekday"),
+        y=alt.Y("Purchases:Q", title="Actual Purchases"),
+        color=alt.Color("Category:N", title="Food Category"),
+        tooltip=["Year", "Weekday", "Category", "Purchases", "Predicted"],
+    )
+)
+
+pred_points = (
+    alt.Chart(merged)
+    .mark_point(filled=True, size=90, color="black")
+    .encode(
+        x="Year-Weekday:N",
+        y=alt.Y("Predicted:Q", title="Predicted Purchases"),
+        tooltip=["Year", "Weekday", "Category", "Purchases", "Predicted"],
+    )
+)
+
+pred_line = (
+    alt.Chart(merged)
+    .mark_line(color="black")
+    .encode(
+        x="Year-Weekday:N",
+        y="Predicted:Q",
+        detail="Category:N",
+    )
+)
+
+st.altair_chart(bars + pred_line + pred_points, use_container_width=True)
+st.dataframe(merged, use_container_width=True, hide_index=True)
+
+with st.expander("How the regression works"):
+    st.markdown(
+        """
+        We fit one unified linear regression model:
+
+        **Purchases = a + b·Weekday + c·Category + d·Year**
+
+        Since **Weekday** and **Category** are categorical variables, the app converts them into dummy variables before fitting the model.
+        The predicted values are shown as black points/lines on top of the actual bar chart.
+        """
     )
