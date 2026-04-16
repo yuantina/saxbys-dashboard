@@ -99,7 +99,7 @@ col3.metric("Available Food Items", f"{len(item_cols):,}")
 st.divider()
 
 # -----------------------------
-# Chart 1: Sales per food item
+# Chart 1: Sales per item (with category color)
 # -----------------------------
 st.subheader("Sales per Item")
 st.caption("Because each item column is coded 1 = purchased, 0 = not purchased, sales here means purchase counts.")
@@ -111,8 +111,11 @@ item_sales = (
 )
 item_sales.columns = ["Food Item", "Purchases"]
 
-# Map category if available
-item_sales["Category"] = item_sales["Food Item"].map(category_map)
+# Ensure category_map exists
+if 'category_map' in locals():
+    item_sales["Category"] = item_sales["Food Item"].map(category_map).fillna("Other")
+else:
+    item_sales["Category"] = "Unknown"
 
 item_sales = item_sales.sort_values("Purchases", ascending=False)
 
