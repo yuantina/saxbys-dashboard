@@ -99,6 +99,36 @@ col3.metric("Available Food Items", f"{len(item_cols):,}")
 st.divider()
 
 # -----------------------------
+# Load category mapping files BEFORE charts
+# -----------------------------
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("Upload category lists")
+    bakery_file = st.file_uploader("Upload bakery items (bakery.csv)", type=["csv"], key="bakery")
+    drink_file = st.file_uploader("Upload drink items (drink.csv)", type=["csv"], key="drink")
+    food_file = st.file_uploader("Upload food items (food.csv)", type=["csv"], key="food")
+
+
+def load_category_list(file):
+    if file is None:
+        return []
+    df_cat = pd.read_csv(file)
+    first_col = df_cat.columns[0]
+    return df_cat[first_col].dropna().astype(str).str.strip().tolist()
+
+bakery_items = load_category_list(bakery_file)
+drink_items = load_category_list(drink_file)
+food_items = load_category_list(food_file)
+
+category_map = {}
+for item in bakery_items:
+    category_map[item] = "Bakery"
+for item in drink_items:
+    category_map[item] = "Drink"
+for item in food_items:
+    category_map[item] = "Food"
+
+# -----------------------------
 # Chart 1: Sales per item (with category color)
 # -----------------------------
 st.subheader("Sales per Item")
@@ -135,37 +165,6 @@ st.altair_chart(bar, use_container_width=True)
 
 st.subheader("Sales Table")
 st.dataframe(item_sales, use_container_width=True, hide_index=True)
-
-# -----------------------------
-# Load category mapping files
-# -----------------------------
-st.divider()
-st.subheader("Category Mapping")
-
-with st.sidebar:
-    bakery_file = st.file_uploader("Upload bakery items (bakery.csv)", type=["csv"], key="bakery")
-    drink_file = st.file_uploader("Upload drink items (drink.csv)", type=["csv"], key="drink")
-    food_file = st.file_uploader("Upload food items (food.csv)", type=["csv"], key="food")
-
-
-def load_category_list(file):
-    if file is None:
-        return []
-    df_cat = pd.read_csv(file)
-    return df_cat.iloc[:, 0].dropna().astype(str).str.strip().tolist()
-
-bakery_items = load_category_list(bakery_file)
-drink_items = load_category_list(drink_file)
-food_items = load_category_list(food_file)
-
-# Build mapping dict
-category_map = {}
-for item in bakery_items:
-    category_map[item] = "Bakery"
-for item in drink_items:
-    category_map[item] = "Drink"
-for item in food_items:
-    category_map[item] = "Food"
 
 # -----------------------------
 # Chart 2: Sales per category per weekday per year
