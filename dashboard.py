@@ -101,7 +101,7 @@ st.divider()
 # -----------------------------
 # Chart 1: Sales per food item
 # -----------------------------
-st.subheader("Sales per Food Item")
+st.subheader("Sales per Item")
 st.caption("Because each item column is coded 1 = purchased, 0 = not purchased, sales here means purchase counts.")
 
 item_sales = (
@@ -110,15 +110,20 @@ item_sales = (
     .reset_index()
 )
 item_sales.columns = ["Food Item", "Purchases"]
+
+# Map category if available
+item_sales["Category"] = item_sales["Food Item"].map(category_map)
+
 item_sales = item_sales.sort_values("Purchases", ascending=False)
 
 bar = (
     alt.Chart(item_sales)
     .mark_bar()
     .encode(
-        x=alt.X("Food Item:N", sort="-y", title="Food Item"),
+        x=alt.X("Food Item:N", sort="-y", title="Item"),
         y=alt.Y("Purchases:Q", title="Number of Purchases"),
-        tooltip=["Food Item", "Purchases"],
+        color=alt.Color("Category:N", title="Food Category"),
+        tooltip=["Food Item", "Category", "Purchases"],
     )
     .properties(height=420)
 )
