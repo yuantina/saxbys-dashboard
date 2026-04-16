@@ -224,3 +224,42 @@ with st.expander("How this chart works"):
         5. Plot using combined Year-Weekday on x-axis.
         """
     )
+
+# -----------------------------
+# Customer search table
+# -----------------------------
+st.divider()
+st.subheader("Customer Purchases")
+st.caption("Search for a customer and view each visit with weekday, year, purchased items, and total sales (purchase count).")
+
+search_name = st.text_input("Type a customer name to search", placeholder="Enter customer name")
+
+customer_view = filtered.copy()
+
+if search_name.strip():
+    customer_view = customer_view[
+        customer_view["Customer"].astype(str).str.contains(search_name.strip(), case=False, na=False)
+    ].copy()
+
+if customer_view.empty:
+    st.info("No customer entries match the search.")
+else:
+    def extract_purchased_items(row):
+        return [item for item in item_cols if row[item] == 1]
+
+    customer_view["Purchased Items"] = customer_view.apply(extract_purchased_items, axis=1)
+    customer_view["Purchased Items"] = customer_view["Purchased Items"].apply(lambda x: ", ".join(x) if x else "")
+    customer_view["Total Sales"] = customer_view[item_cols].sum(axis=1)
+
+    display_cols = ["Customer", "Year", "Weekday", "Purchased Items", "Total Sales"]
+    customer_display = customer_view[display_cols].copy()
+
+    st.dataframe(customer_display, use_container_width=True, hide_index=True)
+
+    customer_csv = customer_display.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download customer search results",
+        data=customer_csv,
+        file_name="customer_purchases.csv",
+        mime="text/csv",
+    )
