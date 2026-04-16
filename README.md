@@ -6,4 +6,4 @@ A Streamlit dashboard for visualizing coffee shop sales by category and weekday.
 
 ```bash
 pip install -r requirements.txt
-streamlit run saxbys_streamlit_dashboard.py
+streamlit run dashboard.py
